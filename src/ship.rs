@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::health::Health;
+
 pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
@@ -41,6 +43,7 @@ fn spawn_ship(mut commands: Commands) {
     commands.spawn((
         Ship,
         Velocity(Vec2::ZERO),
+        Health::new(100.0),
         ShipConfig {
             thrust_magnitude: 200.0,
             rotation_speed: 4.0,
@@ -129,7 +132,7 @@ fn rotation_system(
 
 pub fn position_integration_system(
     time: Res<Time>,
-    mut query: Query<(&Velocity, &mut Transform), With<Ship>>,
+    mut query: Query<(&Velocity, &mut Transform)>,
 ) {
     for (velocity, mut transform) in &mut query {
         transform.translation.x += velocity.0.x * time.delta_secs();
@@ -212,5 +215,45 @@ mod tests {
 
         // Brake amount (2.5) >= speed (1.0), so should clamp to zero
         assert_eq!(velocity, Vec2::ZERO);
+    }
+
+    #[test]
+    fn test_position_integration_moves_non_ship_entity() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, position_integration_system);
+
+        // First update to initialize time
+        app.update();
+
+        // Spawn a non-ship entity with Velocity (no Ship component)
+        let entity = app
+            .world_mut()
+            .spawn((Velocity(Vec2::new(60.0, 0.0)), Transform::from_xyz(0.0, 0.0, 0.0)))
+            .id();
+
+        app.update();
+
+        let transform = app.world().entity(entity).get::<Transform>().unwrap();
+        assert!(transform.translation.x > 0.0, "Non-ship entity should move with Velocity");
+    }
+
+    #[test]
+    fn test_entity_without_velocity_does_not_move() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, position_integration_system);
+
+        // Spawn an entity without Velocity
+        let entity = app
+            .world_mut()
+            .spawn(Transform::from_xyz(100.0, 100.0, 0.0))
+            .id();
+
+        app.update();
+
+        let transform = app.world().entity(entity).get::<Transform>().unwrap();
+        assert_eq!(transform.translation.x, 100.0);
+        assert_eq!(transform.translation.y, 100.0);
     }
 }

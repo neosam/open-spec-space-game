@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::health::Health;
 use crate::ship::{Ship, Velocity};
 
 pub struct WorldPlugin;
@@ -13,7 +14,13 @@ impl Plugin for WorldPlugin {
             .add_systems(Update, chunk_lifecycle_system)
             .add_systems(
                 FixedUpdate,
-                collision_system.after(crate::ship::position_integration_system),
+                (
+                    ship_wall_collision_system,
+                    ship_asteroid_collision_system,
+                    asteroid_wall_collision_system,
+                    asteroid_asteroid_collision_system,
+                )
+                    .after(crate::ship::position_integration_system),
             );
     }
 }
@@ -41,6 +48,11 @@ struct LoadedChunks(HashMap<(i32, i32), Vec<Entity>>);
 
 #[derive(Component)]
 pub struct Wall {
+    pub half_size: Vec2,
+}
+
+#[derive(Component)]
+pub struct Asteroid {
     pub half_size: Vec2,
 }
 
@@ -260,6 +272,10 @@ fn spawn_station_chunk(commands: &mut Commands, center: Vec2, chunk_x: i32, chun
     entities
 }
 
+const ASTEROID_MIN_SPEED: f32 = 5.0;
+const ASTEROID_MAX_SPEED: f32 = 30.0;
+const ASTEROID_HP: f32 = 9999.0;
+
 fn spawn_asteroid_field_chunk(
     commands: &mut Commands,
     center: Vec2,
@@ -275,49 +291,234 @@ fn spawn_asteroid_field_chunk(
         let oy = (rng.next_f32() * 2.0 - 1.0) * max_offset;
         let hx = 15.0 + rng.next_f32() * 30.0;
         let hy = 15.0 + rng.next_f32() * 30.0;
-        entities.push(spawn_wall_in_chunk(
-            commands,
-            center + Vec2::new(ox, oy),
-            Vec2::new(hx, hy),
-            chunk_x,
-            chunk_y,
-        ));
+
+        // Random drift velocity
+        let angle = rng.next_f32() * std::f32::consts::TAU;
+        let speed = ASTEROID_MIN_SPEED + rng.next_f32() * (ASTEROID_MAX_SPEED - ASTEROID_MIN_SPEED);
+        let drift = Vec2::new(angle.cos(), angle.sin()) * speed;
+
+        let position = center + Vec2::new(ox, oy);
+        let half_size = Vec2::new(hx, hy);
+
+        entities.push(
+            commands
+                .spawn((
+                    Asteroid { half_size },
+                    Velocity(drift),
+                    Health::new(ASTEROID_HP),
+                    ChunkCoord(chunk_x, chunk_y),
+                    Transform::from_xyz(position.x, position.y, 0.0),
+                ))
+                .id(),
+        );
     }
 
     entities
 }
 
-// --- Collision (unchanged) ---
+// --- Collision ---
 
 const SHIP_HALF_SIZE: Vec2 = Vec2::new(8.0, 8.0);
+const DAMAGE_FACTOR: f32 = 0.1;
 
-fn collision_system(
+/// Returns (overlap_x, overlap_y) for AABB overlap between two boxes.
+/// Positive values mean overlap on that axis.
+fn aabb_overlap(pos_a: Vec2, half_a: Vec2, pos_b: Vec2, half_b: Vec2) -> (f32, f32) {
+    let overlap_x = (half_a.x + half_b.x) - (pos_a.x - pos_b.x).abs();
+    let overlap_y = (half_a.y + half_b.y) - (pos_a.y - pos_b.y).abs();
+    (overlap_x, overlap_y)
+}
+
+/// Separates entity A from static entity B on the minimum overlap axis.
+/// Returns the axis: true = X axis, false = Y axis.
+fn separate_from_static(
+    transform_a: &mut Transform,
+    vel_a: &mut Velocity,
+    pos_b: Vec2,
+    half_a: Vec2,
+    half_b: Vec2,
+    overlap_x: f32,
+    overlap_y: f32,
+) -> bool {
+    let pos_a = transform_a.translation.truncate();
+    if overlap_x < overlap_y {
+        let sign = (pos_a.x - pos_b.x).signum();
+        transform_a.translation.x = pos_b.x + sign * (half_b.x + half_a.x);
+        vel_a.0.x = 0.0;
+        true
+    } else {
+        let sign = (pos_a.y - pos_b.y).signum();
+        transform_a.translation.y = pos_b.y + sign * (half_b.y + half_a.y);
+        vel_a.0.y = 0.0;
+        false
+    }
+}
+
+/// Bounces entity A off static entity B on the minimum overlap axis.
+fn bounce_off_static(
+    transform_a: &mut Transform,
+    vel_a: &mut Velocity,
+    pos_b: Vec2,
+    half_a: Vec2,
+    half_b: Vec2,
+    overlap_x: f32,
+    overlap_y: f32,
+) {
+    let pos_a = transform_a.translation.truncate();
+    if overlap_x < overlap_y {
+        let sign = (pos_a.x - pos_b.x).signum();
+        transform_a.translation.x = pos_b.x + sign * (half_b.x + half_a.x);
+        vel_a.0.x = -vel_a.0.x;
+    } else {
+        let sign = (pos_a.y - pos_b.y).signum();
+        transform_a.translation.y = pos_b.y + sign * (half_b.y + half_a.y);
+        vel_a.0.y = -vel_a.0.y;
+    }
+}
+
+// Ship ↔ Wall: stop (unchanged behavior)
+fn ship_wall_collision_system(
     mut ship_query: Query<(&mut Transform, &mut Velocity), With<Ship>>,
-    wall_query: Query<(&Transform, &Wall), Without<Ship>>,
+    wall_query: Query<(&Transform, &Wall), (Without<Ship>, Without<Asteroid>)>,
 ) {
     for (mut ship_transform, mut velocity) in &mut ship_query {
         let ship_pos = ship_transform.translation.truncate();
 
         for (wall_transform, wall) in &wall_query {
             let wall_pos = wall_transform.translation.truncate();
-
-            let overlap_x =
-                (SHIP_HALF_SIZE.x + wall.half_size.x) - (ship_pos.x - wall_pos.x).abs();
-            let overlap_y =
-                (SHIP_HALF_SIZE.y + wall.half_size.y) - (ship_pos.y - wall_pos.y).abs();
+            let (overlap_x, overlap_y) = aabb_overlap(ship_pos, SHIP_HALF_SIZE, wall_pos, wall.half_size);
 
             if overlap_x > 0.0 && overlap_y > 0.0 {
-                if overlap_x < overlap_y {
-                    let sign = (ship_pos.x - wall_pos.x).signum();
-                    ship_transform.translation.x =
-                        wall_pos.x + sign * (wall.half_size.x + SHIP_HALF_SIZE.x);
-                    velocity.0.x = 0.0;
+                separate_from_static(
+                    &mut ship_transform, &mut velocity,
+                    wall_pos, SHIP_HALF_SIZE, wall.half_size,
+                    overlap_x, overlap_y,
+                );
+            }
+        }
+    }
+}
+
+// Ship ↔ Asteroid: bounce both, damage ship
+fn ship_asteroid_collision_system(
+    mut ship_query: Query<(&mut Transform, &mut Velocity, &mut Health), With<Ship>>,
+    mut asteroid_query: Query<(&mut Transform, &mut Velocity, &Asteroid), Without<Ship>>,
+) {
+    for (mut ship_transform, mut ship_vel, mut ship_health) in &mut ship_query {
+        let ship_pos = ship_transform.translation.truncate();
+
+        for (mut ast_transform, mut ast_vel, asteroid) in &mut asteroid_query {
+            let ast_pos = ast_transform.translation.truncate();
+            let (overlap_x, overlap_y) = aabb_overlap(ship_pos, SHIP_HALF_SIZE, ast_pos, asteroid.half_size);
+
+            if overlap_x > 0.0 && overlap_y > 0.0 {
+                // Calculate relative speed for damage before bouncing
+                let relative_vel = ship_vel.0 - ast_vel.0;
+                let relative_speed = if overlap_x < overlap_y {
+                    relative_vel.x.abs()
                 } else {
-                    let sign = (ship_pos.y - wall_pos.y).signum();
-                    ship_transform.translation.y =
-                        wall_pos.y + sign * (wall.half_size.y + SHIP_HALF_SIZE.y);
-                    velocity.0.y = 0.0;
+                    relative_vel.y.abs()
+                };
+
+                let damage = relative_speed * DAMAGE_FACTOR;
+                if damage > 0.0 {
+                    ship_health.apply_damage(damage);
                 }
+
+                // Bounce both: swap velocity components on collision axis and separate
+                let ship_pos_current = ship_transform.translation.truncate();
+                let ast_pos_current = ast_transform.translation.truncate();
+                if overlap_x < overlap_y {
+                    let sign = (ship_pos_current.x - ast_pos_current.x).signum();
+                    let total_half = SHIP_HALF_SIZE.x + asteroid.half_size.x;
+                    let midpoint = (ship_pos_current.x + ast_pos_current.x) / 2.0;
+                    ship_transform.translation.x = midpoint + sign * total_half / 2.0;
+                    ast_transform.translation.x = midpoint - sign * total_half / 2.0;
+
+                    std::mem::swap(&mut ship_vel.0.x, &mut ast_vel.0.x);
+                } else {
+                    let sign = (ship_pos_current.y - ast_pos_current.y).signum();
+                    let total_half = SHIP_HALF_SIZE.y + asteroid.half_size.y;
+                    let midpoint = (ship_pos_current.y + ast_pos_current.y) / 2.0;
+                    ship_transform.translation.y = midpoint + sign * total_half / 2.0;
+                    ast_transform.translation.y = midpoint - sign * total_half / 2.0;
+
+                    std::mem::swap(&mut ship_vel.0.y, &mut ast_vel.0.y);
+                }
+            }
+        }
+    }
+}
+
+// Asteroid ↔ Wall: bounce asteroid
+fn asteroid_wall_collision_system(
+    mut asteroid_query: Query<(&mut Transform, &mut Velocity, &Asteroid), Without<Wall>>,
+    wall_query: Query<(&Transform, &Wall), Without<Asteroid>>,
+) {
+    for (mut ast_transform, mut ast_vel, asteroid) in &mut asteroid_query {
+        let ast_pos = ast_transform.translation.truncate();
+
+        for (wall_transform, wall) in &wall_query {
+            let wall_pos = wall_transform.translation.truncate();
+            let (overlap_x, overlap_y) = aabb_overlap(ast_pos, asteroid.half_size, wall_pos, wall.half_size);
+
+            if overlap_x > 0.0 && overlap_y > 0.0 {
+                bounce_off_static(
+                    &mut ast_transform, &mut ast_vel,
+                    wall_pos, asteroid.half_size, wall.half_size,
+                    overlap_x, overlap_y,
+                );
+            }
+        }
+    }
+}
+
+// Asteroid ↔ Asteroid: bounce both, no damage
+fn asteroid_asteroid_collision_system(
+    mut asteroid_query: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid)>,
+) {
+    let mut pairs: Vec<(Entity, Entity)> = Vec::new();
+
+    // Collect colliding pairs
+    let combinations = asteroid_query.iter().collect::<Vec<_>>();
+    for i in 0..combinations.len() {
+        for j in (i + 1)..combinations.len() {
+            let (_, t_a, _, a_a) = &combinations[i];
+            let (_, t_b, _, a_b) = &combinations[j];
+            let pos_a = t_a.translation.truncate();
+            let pos_b = t_b.translation.truncate();
+            let (overlap_x, overlap_y) = aabb_overlap(pos_a, a_a.half_size, pos_b, a_b.half_size);
+            if overlap_x > 0.0 && overlap_y > 0.0 {
+                pairs.push((combinations[i].0, combinations[j].0));
+            }
+        }
+    }
+    drop(combinations);
+
+    // Resolve collisions
+    for (entity_a, entity_b) in pairs {
+        let Ok([mut a, mut b]) = asteroid_query.get_many_mut([entity_a, entity_b]) else {
+            continue;
+        };
+        let pos_a = a.1.translation.truncate();
+        let pos_b = b.1.translation.truncate();
+        let (overlap_x, overlap_y) = aabb_overlap(pos_a, a.3.half_size, pos_b, b.3.half_size);
+
+        if overlap_x > 0.0 && overlap_y > 0.0 {
+            if overlap_x < overlap_y {
+                let sign = (pos_a.x - pos_b.x).signum();
+                let total_half = a.3.half_size.x + b.3.half_size.x;
+                let midpoint = (pos_a.x + pos_b.x) / 2.0;
+                a.1.translation.x = midpoint + sign * total_half / 2.0;
+                b.1.translation.x = midpoint - sign * total_half / 2.0;
+                std::mem::swap(&mut a.2.0.x, &mut b.2.0.x);
+            } else {
+                let sign = (pos_a.y - pos_b.y).signum();
+                let total_half = a.3.half_size.y + b.3.half_size.y;
+                let midpoint = (pos_a.y + pos_b.y) / 2.0;
+                a.1.translation.y = midpoint + sign * total_half / 2.0;
+                b.1.translation.y = midpoint - sign * total_half / 2.0;
+                std::mem::swap(&mut a.2.0.y, &mut b.2.0.y);
             }
         }
     }
@@ -476,5 +677,241 @@ mod tests {
 
         assert!(overlap1_y <= 0.0);
         assert!(overlap2_y <= 0.0);
+    }
+
+    #[test]
+    fn test_asteroid_spawn_has_correct_components() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+
+        let center = Vec2::new(512.0, 512.0);
+        let mut rng = Lcg::new(42);
+        let entities = spawn_asteroid_field_chunk(&mut app.world_mut().commands(), center, 0, 0, &mut rng);
+        app.world_mut().flush();
+
+        assert_eq!(entities.len(), 12);
+        for &entity in &entities {
+            let world = app.world();
+            let e = world.entity(entity);
+            assert!(e.get::<Asteroid>().is_some(), "Asteroid component missing");
+            assert!(e.get::<Velocity>().is_some(), "Velocity component missing");
+            assert!(e.get::<Health>().is_some(), "Health component missing");
+            assert!(e.get::<Wall>().is_none(), "Asteroid should not have Wall component");
+        }
+    }
+
+    #[test]
+    fn test_asteroid_drift_speed_in_range() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+
+        let center = Vec2::new(512.0, 512.0);
+        let mut rng = Lcg::new(42);
+        let entities = spawn_asteroid_field_chunk(&mut app.world_mut().commands(), center, 0, 0, &mut rng);
+        app.world_mut().flush();
+
+        for &entity in &entities {
+            let velocity = app.world().entity(entity).get::<Velocity>().unwrap();
+            let speed = velocity.0.length();
+            assert!(
+                speed >= ASTEROID_MIN_SPEED && speed <= ASTEROID_MAX_SPEED,
+                "Asteroid speed {speed} out of range [{ASTEROID_MIN_SPEED}, {ASTEROID_MAX_SPEED}]"
+            );
+        }
+    }
+
+    #[test]
+    fn test_asteroid_spawn_deterministic() {
+        let mut app1 = App::new();
+        app1.add_plugins(MinimalPlugins);
+        let mut rng1 = Lcg::new(42);
+        let entities1 = spawn_asteroid_field_chunk(&mut app1.world_mut().commands(), Vec2::ZERO, 0, 0, &mut rng1);
+        app1.world_mut().flush();
+
+        let mut app2 = App::new();
+        app2.add_plugins(MinimalPlugins);
+        let mut rng2 = Lcg::new(42);
+        let entities2 = spawn_asteroid_field_chunk(&mut app2.world_mut().commands(), Vec2::ZERO, 0, 0, &mut rng2);
+        app2.world_mut().flush();
+
+        for (e1, e2) in entities1.iter().zip(entities2.iter()) {
+            let t1 = app1.world().entity(*e1).get::<Transform>().unwrap().translation;
+            let t2 = app2.world().entity(*e2).get::<Transform>().unwrap().translation;
+            assert_eq!(t1, t2, "Positions should be deterministic");
+
+            let v1 = app1.world().entity(*e1).get::<Velocity>().unwrap().0;
+            let v2 = app2.world().entity(*e2).get::<Velocity>().unwrap().0;
+            assert_eq!(v1, v2, "Velocities should be deterministic");
+        }
+    }
+
+    #[test]
+    fn test_aabb_overlap_helper() {
+        let (ox, oy) = aabb_overlap(
+            Vec2::new(0.0, 0.0), Vec2::new(8.0, 8.0),
+            Vec2::new(10.0, 0.0), Vec2::new(8.0, 8.0),
+        );
+        assert!(ox > 0.0, "Should overlap on X");
+        assert!(oy > 0.0, "Should overlap on Y");
+    }
+
+    #[test]
+    fn test_aabb_no_overlap_helper() {
+        let (ox, _oy) = aabb_overlap(
+            Vec2::new(0.0, 0.0), Vec2::new(8.0, 8.0),
+            Vec2::new(100.0, 0.0), Vec2::new(8.0, 8.0),
+        );
+        assert!(ox <= 0.0, "Should not overlap on X");
+    }
+
+    #[test]
+    fn test_ship_wall_collision_stops_ship() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, ship_wall_collision_system);
+
+        // Ship moving right
+        app.world_mut().spawn((
+            Ship,
+            Velocity(Vec2::new(100.0, 0.0)),
+            Health::new(100.0),
+            Transform::from_xyz(5.0, 0.0, 0.0),
+        ));
+        // Wall to the right, overlapping
+        app.world_mut().spawn((
+            Wall { half_size: Vec2::new(10.0, 10.0) },
+            Transform::from_xyz(15.0, 0.0, 0.0),
+        ));
+
+        app.update();
+
+        let (vel, health) = app.world_mut()
+            .query_filtered::<(&Velocity, &Health), With<Ship>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(vel.0.x, 0.0, "Ship X velocity should be zeroed");
+        assert_eq!(health.current, 100.0, "Ship should not take damage from wall");
+    }
+
+    #[test]
+    fn test_ship_asteroid_collision_bounces_and_damages() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, ship_asteroid_collision_system);
+
+        // Ship moving right at speed 100
+        app.world_mut().spawn((
+            Ship,
+            Velocity(Vec2::new(100.0, 0.0)),
+            Health::new(100.0),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        // Asteroid at x=10, moving left at speed 10
+        app.world_mut().spawn((
+            Asteroid { half_size: Vec2::new(15.0, 15.0) },
+            Velocity(Vec2::new(-10.0, 0.0)),
+            Health::new(ASTEROID_HP),
+            Transform::from_xyz(10.0, 0.0, 0.0),
+        ));
+
+        app.update();
+
+        let (vel, health) = app.world_mut()
+            .query_filtered::<(&Velocity, &Health), With<Ship>>()
+            .single(app.world())
+            .unwrap();
+        // Ship should have bounced (velocity swapped with asteroid on X)
+        assert!(vel.0.x < 0.0, "Ship should bounce left, got {}", vel.0.x);
+        // Ship should have taken damage
+        assert!(health.current < 100.0, "Ship should take damage, health={}", health.current);
+    }
+
+    #[test]
+    fn test_ship_asteroid_no_damage_at_zero_relative_speed() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, ship_asteroid_collision_system);
+
+        // Ship and asteroid moving at same velocity (zero relative speed)
+        app.world_mut().spawn((
+            Ship,
+            Velocity(Vec2::new(50.0, 0.0)),
+            Health::new(100.0),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Asteroid { half_size: Vec2::new(15.0, 15.0) },
+            Velocity(Vec2::new(50.0, 0.0)),
+            Health::new(ASTEROID_HP),
+            Transform::from_xyz(10.0, 0.0, 0.0),
+        ));
+
+        app.update();
+
+        let health = app.world_mut()
+            .query_filtered::<&Health, With<Ship>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(health.current, 100.0, "No damage at zero relative speed");
+    }
+
+    #[test]
+    fn test_asteroid_wall_collision_bounces() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, asteroid_wall_collision_system);
+
+        // Asteroid moving right
+        let ast_entity = app.world_mut().spawn((
+            Asteroid { half_size: Vec2::new(15.0, 15.0) },
+            Velocity(Vec2::new(20.0, 0.0)),
+            Health::new(ASTEROID_HP),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        )).id();
+        // Wall to the right, overlapping
+        app.world_mut().spawn((
+            Wall { half_size: Vec2::new(10.0, 50.0) },
+            Transform::from_xyz(20.0, 0.0, 0.0),
+        ));
+
+        app.update();
+
+        let vel = app.world().entity(ast_entity).get::<Velocity>().unwrap();
+        assert!(vel.0.x < 0.0, "Asteroid should bounce left, got {}", vel.0.x);
+    }
+
+    #[test]
+    fn test_asteroid_asteroid_collision_bounces_no_damage() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, asteroid_asteroid_collision_system);
+
+        // Two asteroids moving toward each other
+        let a1 = app.world_mut().spawn((
+            Asteroid { half_size: Vec2::new(15.0, 15.0) },
+            Velocity(Vec2::new(20.0, 0.0)),
+            Health::new(ASTEROID_HP),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        )).id();
+        let a2 = app.world_mut().spawn((
+            Asteroid { half_size: Vec2::new(15.0, 15.0) },
+            Velocity(Vec2::new(-20.0, 0.0)),
+            Health::new(ASTEROID_HP),
+            Transform::from_xyz(20.0, 0.0, 0.0),
+        )).id();
+
+        app.update();
+
+        let v1 = app.world().entity(a1).get::<Velocity>().unwrap();
+        let v2 = app.world().entity(a2).get::<Velocity>().unwrap();
+        // Velocities should have swapped (bounced)
+        assert!(v1.0.x < 0.0, "Asteroid 1 should bounce left, got {}", v1.0.x);
+        assert!(v2.0.x > 0.0, "Asteroid 2 should bounce right, got {}", v2.0.x);
+
+        // No damage to either
+        let h1 = app.world().entity(a1).get::<Health>().unwrap();
+        let h2 = app.world().entity(a2).get::<Health>().unwrap();
+        assert_eq!(h1.current, ASTEROID_HP);
+        assert_eq!(h2.current, ASTEROID_HP);
     }
 }
