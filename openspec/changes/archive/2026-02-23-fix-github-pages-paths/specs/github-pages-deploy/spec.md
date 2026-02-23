@@ -1,4 +1,4 @@
-## GitHub Pages Deploy
+## MODIFIED Requirements
 
 ### Requirement: GitHub Actions Workflow for WASM Build
 A GitHub Actions workflow SHALL exist that builds the game as WASM using `trunk build --release` on push to the main branch. The build command SHALL include `--public-url` with the repository's base path so that all generated asset URLs are correctly prefixed for GitHub Pages subpath hosting.
@@ -17,12 +17,3 @@ The GitHub Actions workflow SHALL deploy the `trunk build --release` output (`di
 - **THEN** the contents of `dist/` SHALL be deployed to GitHub Pages
 - **THEN** the game SHALL be accessible at the repository's GitHub Pages URL
 - **THEN** all asset URLs (JS, WASM) SHALL resolve correctly under the repository subpath
-
-### Requirement: Workflow Installs Required Tooling
-The GitHub Actions workflow SHALL install the Rust toolchain with `wasm32-unknown-unknown` target and `trunk` without requiring Nix in CI.
-
-#### Scenario: CI environment setup
-- **WHEN** the workflow runs
-- **THEN** it SHALL install Rust stable with `wasm32-unknown-unknown` target
-- **THEN** it SHALL install `trunk`
-- **THEN** the build SHALL complete without missing tool errors
