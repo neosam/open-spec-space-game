@@ -1,13 +1,9 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Tech stack: Rust (2024 edition), Bevy 0.18 (2D)
+  Build: Nix dev environment (flake.nix)
+  Architecture: ECS (Bevy systems/components/resources)
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
