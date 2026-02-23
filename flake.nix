@@ -14,7 +14,9 @@
         overlays = [ rust-overlay.overlays.default ];
         config.allowUnfree = true;
       };
-      rustToolchain = pkgs.rust-bin.stable.latest.default;
+      rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        targets = [ "wasm32-unknown-unknown" ];
+      };
       bevyDeps = with pkgs; [
         vulkan-loader
         libxkbcommon
@@ -33,6 +35,8 @@
         buildInputs = [
           rustToolchain
           pkgs.pkg-config
+          pkgs.trunk
+          pkgs.wasm-bindgen-cli
           openspec.packages.${system}.default
           pkgs.claude-code
         ] ++ bevyDeps;

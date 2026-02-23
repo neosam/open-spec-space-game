@@ -62,18 +62,32 @@ struct ChunkCoord(i32, i32);
 // --- World seed initialization ---
 
 fn init_world_seed(mut commands: Commands) {
-    let args: Vec<String> = std::env::args().collect();
-    let seed = parse_seed_from_args(&args).unwrap_or_else(|| {
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        t
+    #[cfg(not(target_arch = "wasm32"))]
+    let cli_seed = {
+        let args: Vec<String> = std::env::args().collect();
+        parse_seed_from_args(&args)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let cli_seed: Option<u64> = None;
+
+    let seed = cli_seed.unwrap_or_else(|| {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            js_sys::Date::now() as u64
+        }
     });
     info!("World seed: {seed}");
     commands.insert_resource(WorldSeed(seed));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_seed_from_args(args: &[String]) -> Option<u64> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -637,6 +651,19 @@ mod tests {
             "notanumber".to_string(),
         ];
         assert_eq!(parse_seed_from_args(&args), None);
+    }
+
+    #[test]
+    fn test_seed_fallback_produces_nonzero() {
+        // Simulates the WASM path: no CLI args → fall through to time-based seed
+        let cli_seed: Option<u64> = None;
+        let seed = cli_seed.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        });
+        assert!(seed > 0, "Fallback seed should be nonzero");
     }
 
     #[test]
