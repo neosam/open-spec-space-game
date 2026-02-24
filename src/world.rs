@@ -288,7 +288,7 @@ fn spawn_station_chunk(commands: &mut Commands, center: Vec2, chunk_x: i32, chun
 
 const ASTEROID_MIN_SPEED: f32 = 5.0;
 const ASTEROID_MAX_SPEED: f32 = 30.0;
-const ASTEROID_HP: f32 = 9999.0;
+const ASTEROID_HP_FACTOR: f32 = 0.1;
 
 fn spawn_asteroid_field_chunk(
     commands: &mut Commands,
@@ -314,12 +314,13 @@ fn spawn_asteroid_field_chunk(
         let position = center + Vec2::new(ox, oy);
         let half_size = Vec2::new(hx, hy);
 
+        let asteroid_hp = half_size.x * half_size.y * ASTEROID_HP_FACTOR;
         entities.push(
             commands
                 .spawn((
                     Asteroid { half_size },
                     Velocity(drift),
-                    Health::new(ASTEROID_HP),
+                    Health::new(asteroid_hp),
                     ChunkCoord(chunk_x, chunk_y),
                     Transform::from_xyz(position.x, position.y, 0.0),
                 ))
@@ -337,7 +338,7 @@ const DAMAGE_FACTOR: f32 = 0.1;
 
 /// Returns (overlap_x, overlap_y) for AABB overlap between two boxes.
 /// Positive values mean overlap on that axis.
-fn aabb_overlap(pos_a: Vec2, half_a: Vec2, pos_b: Vec2, half_b: Vec2) -> (f32, f32) {
+pub fn aabb_overlap(pos_a: Vec2, half_a: Vec2, pos_b: Vec2, half_b: Vec2) -> (f32, f32) {
     let overlap_x = (half_a.x + half_b.x) - (pos_a.x - pos_b.x).abs();
     let overlap_y = (half_a.y + half_b.y) - (pos_a.y - pos_b.y).abs();
     (overlap_x, overlap_y)
@@ -837,7 +838,7 @@ mod tests {
         app.world_mut().spawn((
             Asteroid { half_size: Vec2::new(15.0, 15.0) },
             Velocity(Vec2::new(-10.0, 0.0)),
-            Health::new(ASTEROID_HP),
+            Health::new(9999.0),
             Transform::from_xyz(10.0, 0.0, 0.0),
         ));
 
@@ -869,7 +870,7 @@ mod tests {
         app.world_mut().spawn((
             Asteroid { half_size: Vec2::new(15.0, 15.0) },
             Velocity(Vec2::new(50.0, 0.0)),
-            Health::new(ASTEROID_HP),
+            Health::new(9999.0),
             Transform::from_xyz(10.0, 0.0, 0.0),
         ));
 
@@ -892,7 +893,7 @@ mod tests {
         let ast_entity = app.world_mut().spawn((
             Asteroid { half_size: Vec2::new(15.0, 15.0) },
             Velocity(Vec2::new(20.0, 0.0)),
-            Health::new(ASTEROID_HP),
+            Health::new(9999.0),
             Transform::from_xyz(0.0, 0.0, 0.0),
         )).id();
         // Wall to the right, overlapping
@@ -917,13 +918,13 @@ mod tests {
         let a1 = app.world_mut().spawn((
             Asteroid { half_size: Vec2::new(15.0, 15.0) },
             Velocity(Vec2::new(20.0, 0.0)),
-            Health::new(ASTEROID_HP),
+            Health::new(9999.0),
             Transform::from_xyz(0.0, 0.0, 0.0),
         )).id();
         let a2 = app.world_mut().spawn((
             Asteroid { half_size: Vec2::new(15.0, 15.0) },
             Velocity(Vec2::new(-20.0, 0.0)),
-            Health::new(ASTEROID_HP),
+            Health::new(9999.0),
             Transform::from_xyz(20.0, 0.0, 0.0),
         )).id();
 
@@ -938,7 +939,7 @@ mod tests {
         // No damage to either
         let h1 = app.world().entity(a1).get::<Health>().unwrap();
         let h2 = app.world().entity(a2).get::<Health>().unwrap();
-        assert_eq!(h1.current, ASTEROID_HP);
-        assert_eq!(h2.current, ASTEROID_HP);
+        assert_eq!(h1.current, 9999.0);
+        assert_eq!(h2.current, 9999.0);
     }
 }

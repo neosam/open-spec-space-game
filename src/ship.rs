@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::health::Health;
+use crate::weapons::WeaponCooldown;
 
 pub struct ShipPlugin;
 
@@ -37,6 +38,7 @@ pub struct ShipInput {
     pub thrust: bool,
     pub brake: bool,
     pub rotate: f32, // -1.0 left, 0.0 none, 1.0 right
+    pub fire: bool,
 }
 
 fn spawn_ship(mut commands: Commands) {
@@ -51,6 +53,7 @@ fn spawn_ship(mut commands: Commands) {
             brake_force: 150.0,
         },
         ShipInput::default(),
+        WeaponCooldown { remaining: 0.0 },
         Transform::from_xyz(0.0, 0.0, 1.0),
     ));
 }
@@ -70,6 +73,8 @@ fn input_system(
             (false, true) => -1.0,
             _ => 0.0,
         };
+
+        input.fire = keyboard.pressed(KeyCode::Space);
     }
 }
 
@@ -236,6 +241,42 @@ mod tests {
 
         let transform = app.world().entity(entity).get::<Transform>().unwrap();
         assert!(transform.translation.x > 0.0, "Non-ship entity should move with Velocity");
+    }
+
+    #[test]
+    fn test_fire_input_set_when_space_pressed() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.add_systems(Update, input_system);
+
+        app.world_mut().spawn((
+            Ship,
+            ShipInput::default(),
+            Velocity(Vec2::ZERO),
+            Health::new(100.0),
+            ShipConfig {
+                thrust_magnitude: 200.0,
+                rotation_speed: 4.0,
+                drag_coefficient: 0.3,
+                brake_force: 150.0,
+            },
+            Transform::default(),
+        ));
+
+        // Press Space
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+
+        app.update();
+
+        let input = app
+            .world_mut()
+            .query_filtered::<&ShipInput, With<Ship>>()
+            .single(app.world())
+            .unwrap();
+        assert!(input.fire, "Fire should be true when Space is pressed");
     }
 
     #[test]

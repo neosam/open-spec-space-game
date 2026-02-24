@@ -2,6 +2,7 @@ use bevy::{color::palettes::css, prelude::*};
 
 use crate::health::Health;
 use crate::ship::{Ship, ShipInput};
+use crate::weapons::Projectile;
 use crate::world::{Asteroid, Wall};
 
 pub struct VisualsPlugin;
@@ -13,6 +14,7 @@ impl Plugin for VisualsPlugin {
             .add_systems(Update, (
                 attach_wall_meshes,
                 attach_asteroid_meshes,
+                attach_projectile_meshes,
                 parallax_update_system,
                 thrust_particle_system,
                 ship_health_tint_system,
@@ -96,6 +98,27 @@ fn attach_asteroid_meshes(
         commands.entity(entity).insert((
             Mesh2d(meshes.add(rect)),
             MeshMaterial2d(asteroid_material.clone()),
+        ));
+    }
+}
+
+// --- Projectile visuals ---
+
+fn attach_projectile_meshes(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    query: Query<Entity, (With<Projectile>, Without<Mesh2d>)>,
+) {
+    if query.is_empty() {
+        return;
+    }
+    let projectile_material = materials.add(Color::from(css::YELLOW));
+    let projectile_mesh = meshes.add(Circle::new(3.0));
+    for entity in &query {
+        commands.entity(entity).insert((
+            Mesh2d(projectile_mesh.clone()),
+            MeshMaterial2d(projectile_material.clone()),
         ));
     }
 }
